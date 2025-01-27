@@ -1,2 +1,3 @@
-firebase_to_mysql/
+firebase_to_mysql/node_modules
+firebase_to_mysql/gateway-data-gsm.json
 receiver_GSM_FIREBASE_1/credentials.json
