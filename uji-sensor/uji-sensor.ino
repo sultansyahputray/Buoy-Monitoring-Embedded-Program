@@ -9,18 +9,7 @@ GY521 sensor(0x68);
 TinyGPSPlus gps;
 BluetoothSerial SerialBT;    
 
-#define END_NODE_NUMBER 1
-#define FREQ 433E6
-#define SPREADING_FACTOR 12 //12
-#define BANDWIDTH 41700 // 41700 kHz
-#define CODING_RATE 8  // Coding Rate 4/8
-#define PREAMBLE_LENGTH 12
-#define TX_POWER 20
-
 // Define pin on ESP32
-const int csPin = 5;      // LoRa radio chip select
-const int resetPin = 4;   // LoRa radio reset
-const int irqPin = 25;    // Interrupt pin
 const int voltPin = 34;   // Voltage sensor
 const int tempPin = 26;   // Temp and humidity sensor
 const int LDRPin = 35;    // LDR sensor
@@ -50,54 +39,22 @@ unsigned long senssfstMillis = 0;
 void setup() {
   Serial.begin(250000);
   Serial2.begin(115200, SERIAL_8N1, 16, 17);
-  SerialBT.begin("End_Node_2"); 
+  SerialBT.begin("End_Node"); 
   while (!Serial);
 
-  LoRa.setPins(csPin, resetPin, irqPin);
-  Serial.println("LoRa Sender Test");
-  SerialBT.println("LoRa Sender Test");
-
-  if (!LoRa.begin(FREQ)) {
-    // Serial.println("Starting LoRa failed!");
-    SerialBT.println("Starting LoRa failed!"); 
-    while (1);
-  }
-
-  // Set LoRa parameters
-  LoRa.setSpreadingFactor(SPREADING_FACTOR); 
-  LoRa.setSignalBandwidth(BANDWIDTH);  
-  LoRa.setCodingRate4(CODING_RATE);
-  LoRa.setPreambleLength(PREAMBLE_LENGTH);
-  LoRa.setTxPower(TX_POWER);
-
+  Serial.println("Data Sensor Test");
+  SerialBT.println("Data Sensor Test");
   sensor_init();
 }
 
 void loop() {
   sensor_read();
-
-  String payload = String(END_NODE_NUMBER) + ";" + String(accPitch) + ";" + String(accRoll) + ";" + String(tegangan)
-                   + ";" + String(suhu) + ";" + String(humidity) + ";" + String(cahaya) + ";" + String(longitude, 7)
-                   + ";" + String(latitude, 7) + ";" + String(tanggal) + ";" + String(waktu);
-
-  Serial.print("Sending packet: ");
-  Serial.println(payload);
-  SerialBT.print("Sending packet: ");  
-  SerialBT.println(payload);  
-
-  // Send the payload
-  LoRa.beginPacket();
-  LoRa.print(payload);
-  LoRa.endPacket();
-
   delay(1000);
 }
 
 void sensor_init() {
   imu_init();
-  gps_init();
-  // Serial.println("GPS INIT Done");
-  // SerialBT.println("GPS INIT Done"); 
+  gps_init(); 
 }
 
 void sensor_read() {
@@ -105,8 +62,8 @@ void sensor_read() {
 
   if (currentMillis - senssfstMillis >= 10) {
     senssfstMillis = currentMillis;
-    volt_read();
-    temp_read();
+    // volt_read();
+    // temp_read();
   }
 
   if (currentMillis - senssmidMillis >= 100) {
@@ -117,8 +74,8 @@ void sensor_read() {
   if (currentMillis - sensslowMillis >= 1000) {
     sensslowMillis = currentMillis;
 
-    imu_read();
-    lumen_read();
+    // imu_read();
+    // lumen_read();
   }
 }
 
@@ -128,9 +85,7 @@ void imu_init() {
 
   while (sensor.wakeup() == false) {
     // Serial.print(millis());
-    // Serial.println("\tCouldn't connect to sensor IMU");
-    // SerialBT.print(millis());  
-    // SerialBT.println("\tCouldn't connect to sensor IMU");  
+    // Serial.println("\tCouldn't connect to sensor IMU"); 
     delay(1000);
   }
 
@@ -141,13 +96,10 @@ void imu_init() {
 
 void gps_init(){
   Serial.println(gps.libraryVersion());
-  SerialBT.println(gps.libraryVersion()); 
   if(gps.libraryVersion() != 0){
       Serial.println("gps init SUCCESS");
-      SerialBT.println("gps init SUCCESS"); 
   } else {
       Serial.println("gps init FAILED");
-      SerialBT.println("gps init FAILED");  
   }
   delay(100);
 }
@@ -171,15 +123,13 @@ void imu_read() {
   accPitch = pitch - initialPitch;
   accRoll = roll - initialRoll;
 
-  // Serial.print("Relative Pitch: ");
-  // Serial.println(accPitch);
-  // SerialBT.print("Relative Pitch: "); 
-  // SerialBT.println(accPitch);  
+  Serial.print("Relative Pitch: ");
+  Serial.print(accPitch); 
+  Serial.println(" Derajat");
 
-  // Serial.print("Relative Roll: ");
-  // Serial.println(accRoll);
-  // SerialBT.print("Relative Roll: "); 
-  // SerialBT.println(accRoll); 
+  Serial.print("Relative Roll: ");
+  Serial.print(accRoll);
+  Serial.println(" Derajat");
 }
 
 void volt_read() {
@@ -191,6 +141,10 @@ void volt_read() {
   tegangan = map(tegangan_raw, 592, 900, 900, 1250);
   tegangan = tegangan / 100.0;
   tegangan = tegangan < 0.0 ? 0.0 : tegangan;
+
+  Serial.print("Tegangan: ");
+  Serial.print(tegangan);
+  Serial.println(" Volt");
 }
 
 void temp_read() {
@@ -208,10 +162,19 @@ void temp_read() {
   T = (1.0 / (c1 + c2*logR2 + c3*logR2*logR2*logR2));
   suhu = T - 273.15 + 3.0;
   humidity = 0.4 * 100 * (exp((17.625 * Dp) / (243.04 + Dp)) / exp((17.625 * suhu) / (243.04 + suhu)));
+
+  Serial.print("Suhu: ");
+  Serial.print(suhu);
+  Serial.println(" Derajat Celcius");
+
+  Serial.print("Humidity: ");
+  Serial.println(humidity);
 }
 
 void lumen_read(){
   cahaya = analogRead(LDRPin);
+  Serial.print("Intensitas Cahaya: ");
+  Serial.println(cahaya);
 }
 
 void gps_read(){
@@ -228,31 +191,33 @@ void gps_read(){
       latitude = gps.location.lat();
       tanggal = String(gps.date.day()) + "/"+ String(gps.date.month()) + "/" + String(gps.date.year());
       waktu = String(gps.time.hour() + 7) + ":" + String(gps.time.minute()) + ":" + String(gps.time.second());
-      // Serial.print("Longitude: ");
-      // Serial.println(longitude, 6);
-      // SerialBT.print("Longitude: ");  
-      // SerialBT.println(longitude, 6);  
+      Serial.print("Longitude: ");
+      Serial.println(longitude, 6);
+      SerialBT.print("Longitude: ");  
+      SerialBT.println(longitude, 6); 
 
-      // Serial.print("Latitude: ");
-      // Serial.println(latitude, 6);
-      // SerialBT.print("Latitude: ");  
-      // SerialBT.println(latitude, 6);  
+      Serial.print("Latitude: ");
+      Serial.println(latitude, 6);
+      SerialBT.print("Latitude: ");  
+      SerialBT.println(latitude, 6);
 
-      // SerialBT.print("Tanggal: ");  
-      // SerialBT.println(tanggal);  
-      // SerialBT.print("Waktu: "); 
-      // SerialBT.println(waktu);
+      Serial.print("Tanggal: ");  
+      Serial.println(tanggal);  
+      Serial.print("Waktu: "); 
+      Serial.println(waktu);
+      SerialBT.print("Tanggal: ");  
+      SerialBT.println(tanggal);  
+      SerialBT.print("Waktu: "); 
+      SerialBT.println(waktu);
     } else {
       Serial.println("Waiting for GPS fix...");
-      // SerialBT.println("Waiting for GPS fix...");  
+      SerialBT.println("Waiting for GPS fix...");  
     }
 
     if(gps.satellites.isValid()){
       satelite = gps.satellites.value();
       // Serial.print("Satellites: ");
       // Serial.println(satelite);
-      // SerialBT.print("Satellites: ");  
-      // SerialBT.println(satelite);  
     }  
   }
 }

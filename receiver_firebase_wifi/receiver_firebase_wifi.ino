@@ -2,35 +2,27 @@
 #include <LoRa.h>
 #include <Wire.h>
 #include <WiFi.h>
-#include <PubSubClient.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
 
 #define GATEWAY_NUMBER 1
-#define NUM_ITERATIONS 10
-#define TIMEOUT 60000
+#define NUM_ITERATIONS 15
+#define TIMEOUT 300000
 #define FREQ 433E6
-#define SPREADING_FACTOR 8
+#define SPREADING_FACTOR 12
 #define BANDWIDTH 41700 // 15,6 kHz
-#define CODING_RATE 5  // Coding Rate 4/8
+#define CODING_RATE 8  // Coding Rate 4/8
 #define PREAMBLE_LENGTH 12
 
 // Define WiFi credentials
-const char* ssid = "Ntah";
-const char* password = "whuu5663";
+const char* ssid = "CBN";
+const char* password = "Tanaya794";
 
-IPAddress staticIP(192, 168, 1, 6);
-IPAddress gateway(192, 168, 1, 1);
-IPAddress subnet(255, 255, 255, 0);
-IPAddress dns(192, 168, 1, 1);
+// Define Firebase details
+const String FIREBASE_HOST = "https://gateway-data-gsm-default-rtdb.asia-southeast1.firebasedatabase.app/";
+const String FIREBASE_SECRET = "7ydfdVT7E35GpD5J4Px4bHy9hPaesiPvfK8TSUTW";
 
-// Define MQTT broker settings
-const char* mqtt_server = "192.168.254.221"; // Broker IP
-const int mqtt_port = 1883;
-
-// Define MQTT topics
-const char* buoy1_topic = "buoy/1";
-const char* buoy2_topic = "buoy/2";
-
-// Define the pins of LoRa module
+// Define LoRa pins
 const int csPin = 5;     // LoRa radio chip select
 const int resetPin = 4;  // LoRa radio reset
 const int irqPin = 25;   // Must be a hardware interrupt pin
@@ -73,9 +65,6 @@ String waktu2;
 int RSSI2 = 0;
 float SNR2 = 0;
 
-WiFiClient espClient;
-PubSubClient client(espClient);
-
 void setup() {
   Serial.begin(115200);
   while (!Serial);
@@ -89,34 +78,59 @@ void setup() {
   }
 
   // Set LoRa parameters
-  LoRa.setSpreadingFactor(SPREADING_FACTOR); 
-  LoRa.setSignalBandwidth(BANDWIDTH);  
+  LoRa.setSpreadingFactor(SPREADING_FACTOR);
+  LoRa.setSignalBandwidth(BANDWIDTH);
   LoRa.setCodingRate4(CODING_RATE);
   LoRa.setPreambleLength(PREAMBLE_LENGTH);
 
   connectWiFi();
-  client.setServer(mqtt_server, mqtt_port);
-  connectMQTT();
+
+  // Configure NTP with GMT+7 (WIB)
+  configTime(25200, 0, "pool.ntp.org", "time.nist.gov");
+  Serial.println("Fetching time from NTP server...");
+
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to obtain time");
+    return;
+  }
+  Serial.printf("Current time: %04d-%02d-%02d %02d:%02d:%02d\n",
+                timeinfo.tm_year + 1900,
+                timeinfo.tm_mon + 1,
+                timeinfo.tm_mday,
+                timeinfo.tm_hour,
+                timeinfo.tm_min,
+                timeinfo.tm_sec);
 }
 
 void loop() {
-  if (!client.connected()) {
-    connectMQTT();
-  }
-  client.loop();
-
-  // Serial.println("Update data buoy");
-  // Serial.print("Buoy Status: ");
-  // Serial.println(buoyStatus);
   updateBuoyData();
 
   if (buoyStatus) {
-    sendDataToMQTT();
+    sendDataToFirebase();
     zeroDataSent = false;
-  } else if (millis() - lastUpdateTime >= TIMEOUT && !zeroDataSent) {
-    sendZeroDataToMQTT();
-    zeroDataSent = true;
+  } else if (millis() - lastUpdateTime >= TIMEOUT) {
+    sendZeroDataToFirebase();
+    Serial.println("Zero data");
+    lastUpdateTime = millis();
   }
+}
+
+String getFormattedDateTime() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    return "Invalid time";
+  }
+
+  char buffer[30];
+  sprintf(buffer, "%04d-%02d-%02d %02d:%02d:%02d",
+          timeinfo.tm_year + 1900,
+          timeinfo.tm_mon + 1,
+          timeinfo.tm_mday,
+          timeinfo.tm_hour,
+          timeinfo.tm_min,
+          timeinfo.tm_sec);
+  return String(buffer);
 }
 
 void updateBuoyData() {
@@ -136,8 +150,6 @@ void updateBuoyData() {
       Serial.println(receivedData);
 
       parseData(receivedData);
-      printBuoyData();
-
       if (buoyNumber == 1) buoy1Active = true;
       if (buoyNumber == 2) buoy2Active = true;
 
@@ -157,13 +169,6 @@ void updateBuoyData() {
 
 void connectWiFi() {
   WiFi.mode(WIFI_STA);
-
-  // if want to config ip wifi
-  // if (WiFi.config(staticIP, gateway, subnet, dns, dns) == false) {
-  //   Serial.println("config failed");
-  // }
-  //
-
   WiFi.begin(ssid, password);
   Serial.println("Connecting to WiFi");
 
@@ -176,19 +181,6 @@ void connectWiFi() {
   Serial.println(ssid);
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
-}
-
-void connectMQTT() {
-  while (!client.connected()) {
-    Serial.print("Connecting to MQTT...");
-    if (client.connect("LoRaClient")) { 
-      Serial.println("connected");
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      delay(5000);
-    }
-  }
 }
 
 void parseData(String data) {
@@ -241,28 +233,82 @@ void parseData(String data) {
     waktu2 = waktu;
     RSSI2 = RSSI;
     SNR2 = SNR;
-
   }
 }
 
-void sendDataToMQTT() {
+void sendDataToFirebase() {
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("Sending data to MQTT");
+    HTTPClient http;
 
-    String buoy1Data = buoy1Active ? String(GATEWAY_NUMBER) + "," + String(accPitch1) + "," + String(accRoll1) + "," +
-                       String(tegangan1) + "," + String(suhu1) + "," + String(humidity1) + "," + String(light1) + "," + 
-                       String(longitude1, 7) + "," + String(latitude1, 7) + "," + String(tanggal1) + "," + String(waktu1) + "," + 
-                       String(RSSI1) + "," + String(SNR1)
-                       : String(GATEWAY_NUMBER) + ",0,0,0,0,0,0,0,0" + "," + String(tanggal1) + "," + String(waktu1) + "," + "0,0";
-    client.publish(buoy1_topic, buoy1Data.c_str());
+    if (buoy1Active) {
+      String url1 = FIREBASE_HOST + "data_new/buoy1.json?auth=" + FIREBASE_SECRET;
 
-    String buoy2Data = buoy2Active ? String(GATEWAY_NUMBER) + "," + String(accPitch2) + "," + String(accRoll2) + "," +
-                       String(tegangan2) + "," + String(suhu2) + "," + String(humidity2) + "," + String(light2) + "," + 
-                       String(longitude2, 7) + "," + String(latitude2, 7) + "," + String(tanggal2) + "," + String(waktu2) + "," +
-                       String(RSSI2) + "," + String(SNR2)
-                       : String(GATEWAY_NUMBER) + ",0,0,0,0,0,0,0,0" + "," + String(tanggal2) + "," + String(waktu2) + "," + "0,0";
-    client.publish(buoy2_topic, buoy2Data.c_str());
+      StaticJsonDocument<256> json1;
+      json1["buoy_number"] = 1;
+      json1["pitch"] = accPitch1;
+      json1["roll"] = accRoll1;
+      json1["voltage"] = tegangan1;
+      json1["temperature"] = suhu1;
+      json1["humidity"] = humidity1;
+      json1["light"] = light1;
+      json1["longitude"] = longitude1;
+      json1["latitude"] = latitude1;
+      json1["tanggal_node"] = tanggal1;
+      json1["waktu_node"] = waktu1;
+      json1["RSSI"] = RSSI1;
+      json1["SNR"] = SNR1;
+      json1["timestamp"] = getFormattedDateTime();
 
+      String payload1;
+      serializeJson(json1, payload1);
+
+      http.begin(url1);
+      http.addHeader("Content-Type", "application/json");
+      int httpResponseCode1 = http.POST(payload1);
+
+      if (httpResponseCode1 > 0) {
+        Serial.printf("Data for Buoy 1 sent successfully: %d\n", httpResponseCode1);
+      } else {
+        Serial.printf("Error sending data for Buoy 1: %s\n", http.errorToString(httpResponseCode1).c_str());
+      }
+      http.end();
+    }
+
+    if (buoy2Active) {
+      String url2 = FIREBASE_HOST + "data_new/buoy2.json?auth=" + FIREBASE_SECRET;
+
+      StaticJsonDocument<256> json2;
+      json2["buoy_number"] = 2;
+      json2["pitch"] = accPitch2;
+      json2["roll"] = accRoll2;
+      json2["voltage"] = tegangan2;
+      json2["temperature"] = suhu2;
+      json2["humidity"] = humidity2;
+      json2["light"] = light2;
+      json2["longitude"] = longitude2;
+      json2["latitude"] = latitude2;
+      json2["tanggal_node"] = tanggal2;
+      json2["waktu_node"] = waktu2;
+      json2["RSSI"] = RSSI2;
+      json2["SNR"] = SNR2;
+      json2["timestamp"] = getFormattedDateTime();
+
+      String payload2;
+      serializeJson(json2, payload2);
+
+      http.begin(url2);
+      http.addHeader("Content-Type", "application/json");
+      int httpResponseCode2 = http.POST(payload2);
+
+      if (httpResponseCode2 > 0) {
+        Serial.printf("Data for Buoy 2 sent successfully: %d\n", httpResponseCode2);
+      } else {
+        Serial.printf("Error sending data for Buoy 2: %s\n", http.errorToString(httpResponseCode2).c_str());
+      }
+      http.end();
+    }
+
+    // Reset flags
     counter = 0;
     buoyStatus = false;
     buoy1Active = false;
@@ -273,43 +319,47 @@ void sendDataToMQTT() {
   }
 }
 
-void sendZeroDataToMQTT() {
+void sendZeroDataToFirebase() {
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("Sending zero data to MQTT");
+    HTTPClient http;
+    String url1 = FIREBASE_HOST + "data_new/zero.json?auth=" + FIREBASE_SECRET;
 
-    accPitch1 = 0;
-    accRoll1 = 0;
-    tegangan1 = 0;
-    suhu1 = 0;
-    humidity1 = 0;
-    light1 = 0;
-    longitude1 = 0;
-    latitude1 = 0;
-    RSSI1 = 0;
-    SNR1 = 0;
+    StaticJsonDocument<256> json1;
+    json1["buoy_number"] = 0;
+    json1["pitch"] = 0;
+    json1["roll"] = 0;
+    json1["voltage"] = 0;
+    json1["temperature"] = 0;
+    json1["humidity"] = 0;
+    json1["light"] = 0;
+    json1["longitude"] = 0;
+    json1["latitude"] = 0;
+    json1["tanggal_node"] = 0;
+    json1["waktu_node"] = 0;
+    json1["RSSI"] = 0;
+    json1["SNR"] = 0;
+    json1["timestamp"] = getFormattedDateTime();
+    
+    String payload1;
+    serializeJson(json1, payload1);
+    http.begin(url1);
+    http.addHeader("Content-Type", "application/json");
+    int httpResponseCode1 = http.POST(payload1);
 
-    accPitch2 = 0;
-    accRoll2 = 0;
-    tegangan2 = 0;
-    suhu2 = 0;
-    humidity2 = 0;
-    light2 = 0;
-    longitude2 = 0;
-    latitude2 = 0;
-    RSSI1 = 0;
-    SNR1 = 0;
+    if (httpResponseCode1 > 0) {
+      Serial.printf("Zero data sent successfully: %d\n", httpResponseCode1);
+    } else {
+      Serial.printf("Error sending zero data: %s\n", http.errorToString(httpResponseCode1).c_str());
+    }
+    http.end();
 
-    String zeroBuoyData1 = String(GATEWAY_NUMBER) + ",0,0,0,0,0,0,0,0" + "," + String(tanggal1) + "," + String(waktu1) + "," + "0,0";
-    String zeroBuoyData2 = String(GATEWAY_NUMBER) + ",0,0,0,0,0,0,0,0" + "," + String(tanggal2) + "," + String(waktu2) + "," + "0,0";
-
-    // Publish zero data for both buoy1 and buoy2
-    client.publish(buoy1_topic, zeroBuoyData1.c_str());
-    client.publish(buoy2_topic, zeroBuoyData2.c_str());
+    zeroDataSent = true;
   } else {
     Serial.println("WiFi Disconnected! Trying to reconnect...");
     connectWiFi();
   }
 }
+
 
 void printBuoyData() {
   Serial.print("Buoy 1 - Pitch: ");
