@@ -4,7 +4,7 @@ from firebase_admin import db
 import mysql.connector
 
 # Inisialisasi Firebase
-cred = credentials.Certificate('gateway-data-gsm-firebase-adminsdk-dgmh4-c3b2680782.json')
+# cred = credentials.Certificate('gateway-data-gsm.json') //uncomment when u need to use it
 firebase_admin.initialize_app(cred, {
     'databaseURL': 'https://gateway-data-gsm-default-rtdb.asia-southeast1.firebasedatabase.app/'
 })
